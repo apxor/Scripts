@@ -1,28 +1,9 @@
 import boto3
 
-# ec2 = boto3.resource('ec2')
-# newInstance = ec2.create_instances(ImageId=AMI_ID, MinCount=1, MaxCount=1, InstanceType=INSTANCE_TYPES['t2.micro'])
-# print(newInstance[0].id)
-
-class VPC(object):
-    """Creates  Virtual Private cloud"""
-    def __init__(self, cidrBlock, ipv6=False, dryRun=False, instanceTenancy='default'):
-        try:
-            client = boto3.client('elb')
-            response = client.create_vpc(
-                CidrBlock=cidrBlock,
-                AmazonProvidedIpv6CidrBlock=ipv6,
-                DryRun=dryRun,
-                InstanceTenancy=instanceTenancy
-            )
-            print(response)
-        except Exception as e:
-            print(e)
-        else:
-            print("VPC creation successful")
 
 class Instance(object):
-    """ Creates an AWS EC2 Instance,USAGE: Instance((MinCount=minCount, MaxCount=maxCount, InstanceType=instanceType, ImageId=imageId))
+    """ Creates an AWS EC2 Instance,
+    USAGE: Instance((MinCount=minCount, MaxCount=maxCount, InstanceType=instanceType, ImageId=imageId))
         For the created Instance list use getInstances()
         For the types of Available instances use getInstanceTypes()"""
     # AMI: AMAZON MACHINE IMAGE
@@ -37,20 +18,22 @@ class Instance(object):
     # M4 LARGE-2-8
     # M4 XLARGE-4-16
     # M4 4X LARGE-16-64
-    INSTANCE_TYPES = {"t2.micro": "t2.micro", "t2.medium": "t2.medium", "t2.large": "t2.large", "t2.large": "t2.large",
+    INSTANCE_TYPES = {"t2.micro": "t2.micro", "t2.medium": "t2.medium", "t2.large": "t2.large",
                       "m4.large": "m4.large", "m4.xlarge": "m4.xlarge", "m4.4xlarge": "m4.4xlarge"}
-    Instances = []
-    def __init__(self, minCount, maxCount, instanceType = INSTANCE_TYPES["t2.micro"], imageId = AMI_ID):
+
+    def __init__(self, ec2, image_id=AMI_ID, instance_type=INSTANCE_TYPES["t2.micro"],
+                 max_count=1, min_count=1, security_group=[]):
         try:
-            ec2 = boto3.resource('ec2')
-            self.Instances.extend(ec2.create_instances(MinCount=minCount, MaxCount=maxCount, InstanceType=instanceType, ImageId=imageId))
+            instances = ec2.create_instances(
+                    ImageId=image_id, InstanceType=instance_type, MaxCount=max_count, MinCount=min_count,
+                    NetworkInterfaces=security_group)
+            instances[0].wait_until_running()
+            print(instances[0].id)
+            self.instances = instances
         except Exception as e:
             print(e)
         else:
             print("Instances created successfully.")
-
-    def getInstances(self):
-        return self.INSTANCE_TYPES
 
     def getAMIID(self):
         return self.AMI_ID
@@ -58,9 +41,9 @@ class Instance(object):
     def getInstances(self):
         return self.Instances
 
-    def terminateAllInstances(self):
+    def terminateAllInstances(self, instances):
         try:
-            for instance in self.Instances:
+            for instance in instances:
                 response = instance.terminate()
                 print (response)
         except Exception as e:
@@ -90,5 +73,50 @@ class LoadBalancer(object):
         )
         print(response)
 
-# newInstance = Instance(1, 2)
-# print(newInstance.getInstances())
+def createVpc(ec2):
+    vpc = ec2.create_vpc()  # FIXME
+    vpc.create_tags()  # FIXME
+    vpc.wait_untill_available()
+    return vpc
+
+def createRoute(routeTable, internetGateway):
+    return routeTable.create_route(
+        DestinationCidrBlock='0.0.0.0/0',
+        GatewayId=internetGateway.id
+    )
+
+
+ec2 = boto3.resource('ec2')
+#Create VPC
+vpc = createVpc(ec2)
+print(vpc.id)
+
+#Create Gateway and attach to VPC
+internetGateway = ec2.create_internet_gateway()
+vpc.attach_internet_gateway(InternetGatewayId=internetGateway.id)
+
+#Creating a routeTable and public route
+routeTable = vpc.create_route_table()
+route = createRoute(routeTable, internetGateway)
+print(routeTable.id)
+
+# Create Subnet
+subnet = ec2.create_subnet(CidrBlock='192.168.1.0/24', VpcId=vpc.id)
+print(subnet.id)
+
+# Associate the route table with the subnet
+routeTable.associate_with_subnet(SubnetId=subnet.id)
+
+# Create security group
+securityGroup = ec2.create_security_group(
+    GroupName='', Description='', VpcId=vpc.id)
+securityGroup.authorize_ingress(
+    CidrIp='0.0.0.0/0',
+    IpProtocol='icmp',
+    FromPort=-1,
+    ToPort=-1
+)
+print(securityGroup.id)
+
+# Create instance
+newInstances = Instance(ec2, None, None, 1, 1,[{'SubnetId': subnet.id, 'DeviceIndex': 0, 'AssociatePublicIpAddress': False, 'Groups': [securityGroup.group_id]}])
